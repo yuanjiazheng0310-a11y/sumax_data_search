@@ -1,0 +1,5 @@
+streamlit>=1.36
+pandas>=2.0
+pyarrow>=14.0
+filelock>=3.12
+supabase>=2.4

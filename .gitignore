@@ -1,0 +1,21 @@
+# ---- 密钥与本地数据（绝不入库） ----
+.streamlit/
+secrets.toml
+users.json
+visits.json
+login_log.json
+actions_local.json
+*.json.lock
+*.bak_*
+
+# ---- Python 缓存 ----
+__pycache__/
+*.pyc
+
+# ---- IDE ----
+.idea/
+.vscode/
+
+# ---- 系统 ----
+.DS_Store
+Thumbs.db

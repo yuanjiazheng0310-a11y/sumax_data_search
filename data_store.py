@@ -74,8 +74,11 @@ def _to_naive_local(dt):
     """把可能带时区的时间转成本机本地 naive datetime（展示与统计口径统一）"""
     if dt is None:
         return None
-    if isinstance(dt, datetime):
-        return dt.astimezone().replace(tzinfo=None) if dt.tzinfo else dt
+    if hasattr(dt, "tzinfo") and dt.tzinfo is not None:
+        # pandas.Timestamp.astimezone() 必须带 tz 参数；先转 Python datetime 再处理
+        if isinstance(dt, pd.Timestamp):
+            dt = dt.to_pydatetime()
+        return dt.astimezone().replace(tzinfo=None)
     return dt
 
 

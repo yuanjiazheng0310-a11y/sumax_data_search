@@ -18,7 +18,7 @@ import os
 import json
 import hashlib
 import secrets as _secrets
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 
 import pandas as pd
 from filelock import FileLock
@@ -39,6 +39,7 @@ DEFAULT_ADMIN = "admin"
 DEFAULT_ADMIN_PWD = "admin123"
 
 MAX_LOGIN_LOG = 500          # 本地降级模式：登录日志保留条数
+LOGIN_WINDOW_MINUTES = 15    # 登录失败计数/锁定窗口（分钟）
 ACTION_TYPES = (
     "kit_query", "oem_query", "multi_to_single", "single_to_multi",
     "legacy", "unknown",
@@ -112,6 +113,11 @@ class LocalJsonStore:
                 "role": "admin",
             }
         }
+
+    def find_user(self, username):
+        """按用户名精确查找单个账户；不存在返回 None"""
+        users = self.list_users()
+        return users.get(username)
 
     def ensure_default_admin(self):
         users = self.list_users()
@@ -234,6 +240,61 @@ class LocalJsonStore:
         df["created_at"] = pd.to_datetime(df["time"], errors="coerce")
         return df.reset_index(drop=True)
 
+    # ---------- 登录失败限流辅助（本地 json） ----------
+    def count_recent_failed(self, ip=None, username=None):
+        """统计近 LOGIN_WINDOW_MINUTES 分钟内失败登录次数（可按 ip / username 过滤）"""
+        since = (datetime.now() - timedelta(minutes=LOGIN_WINDOW_MINUTES)).strftime("%Y-%m-%d %H:%M:%S")
+        n = 0
+        entries = []
+        if os.path.exists(LOGIN_LOG_FILE):
+            try:
+                with open(LOGIN_LOG_FILE, "r", encoding="utf-8") as f:
+                    entries = json.load(f)
+                    if not isinstance(entries, list):
+                        entries = []
+            except (json.JSONDecodeError, IOError):
+                entries = []
+        for e in entries:
+            if e.get("success"):
+                continue
+            if str(e.get("time", "")) < since:
+                continue
+            if ip and (e.get("ip") or "") != ip:
+                continue
+            if username and (e.get("username") or "") != username:
+                continue
+            n += 1
+        return n
+
+    def clear_recent_failed(self, ip=None, username=None):
+        """清除近 LOGIN_WINDOW_MINUTES 分钟内的失败记录（登录成功时调用，防误伤历史统计）"""
+        if ip is None and username is None:
+            return
+        since = (datetime.now() - timedelta(minutes=LOGIN_WINDOW_MINUTES)).strftime("%Y-%m-%d %H:%M:%S")
+        try:
+            lock = FileLock(LOGIN_LOCK_FILE)
+            with lock:
+                entries = []
+                if os.path.exists(LOGIN_LOG_FILE):
+                    try:
+                        with open(LOGIN_LOG_FILE, "r", encoding="utf-8") as f:
+                            entries = json.load(f)
+                            if not isinstance(entries, list):
+                                entries = []
+                    except (json.JSONDecodeError, IOError):
+                        entries = []
+                keep = []
+                for e in entries:
+                    if (not e.get("success")) and str(e.get("time", "")) >= since \
+                            and (not ip or (e.get("ip") or "") == ip) \
+                            and (not username or (e.get("username") or "") == username):
+                        continue
+                    keep.append(e)
+                with open(LOGIN_LOG_FILE, "w", encoding="utf-8") as f:
+                    json.dump(keep, f, ensure_ascii=False, indent=4)
+        except Exception as e:
+            print(f"清除失败登录记录失败: {e}")
+
 
 # ----------------------------------------------------------
 # Supabase 云端实现
@@ -274,6 +335,20 @@ class SupabaseStore:
             })
         if rows:
             self._client.table("users").upsert(rows, on_conflict="username").execute()
+
+    def find_user(self, username):
+        """按用户名精确查找单个账户（单条查询，替代全表拉取）；不存在返回 None"""
+        resp = self._client.table("users").select("username,password_hash,display_name,role") \
+            .eq("username", username).limit(1).execute()
+        rows = resp.data or []
+        if not rows:
+            return None
+        row = rows[0]
+        return {
+            "password_hash": row["password_hash"],
+            "display_name": row.get("display_name") or row["username"],
+            "role": row.get("role") or "user",
+        }
 
     def ensure_default_admin(self):
         resp = self._client.table("users").select("username").eq("username", DEFAULT_ADMIN).limit(1).execute()
@@ -342,6 +417,35 @@ class SupabaseStore:
         df["created_at"] = pd.to_datetime(df["created_at"], errors="coerce", utc=True)
         df["created_at"] = df["created_at"].apply(_to_naive_local)
         return df.reset_index(drop=True)
+
+    # ---------- 登录失败限流辅助（Supabase） ----------
+    def count_recent_failed(self, ip=None, username=None):
+        """统计近 LOGIN_WINDOW_MINUTES 分钟内失败登录次数（可按 ip / username 过滤）"""
+        since = (datetime.now(timezone.utc) - timedelta(minutes=LOGIN_WINDOW_MINUTES)).isoformat()
+        q = self._client.table("login_attempts") \
+            .select("id", count="exact") \
+            .eq("success", False).gte("created_at", since)
+        if ip:
+            q = q.eq("ip", ip)
+        if username:
+            q = q.eq("username", username)
+        resp = q.execute()
+        if getattr(resp, "count", None) is not None:
+            return int(resp.count)
+        return len(resp.data or [])
+
+    def clear_recent_failed(self, ip=None, username=None):
+        """删除近 LOGIN_WINDOW_MINUTES 分钟内的失败记录（登录成功时调用）"""
+        if ip is None and username is None:
+            return
+        since = (datetime.now(timezone.utc) - timedelta(minutes=LOGIN_WINDOW_MINUTES)).isoformat()
+        q = self._client.table("login_attempts") \
+            .delete().eq("success", False).gte("created_at", since)
+        if ip:
+            q = q.eq("ip", ip)
+        if username:
+            q = q.eq("username", username)
+        q.execute()
 
 
 # ----------------------------------------------------------

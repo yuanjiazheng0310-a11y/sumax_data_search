@@ -56,7 +56,7 @@ DEFAULT_ADMIN_PWD = "admin123"
 # ==========================================
 USERNAME_MAX_LEN = 20             # 用户名最长字符数
 PASSWORD_MAX_LEN = 20             # 密码输入上限（登录框 + 新密码上限）
-PASSWORD_MIN_LEN = 8              # 新密码下限
+PASSWORD_MIN_LEN = 6              # 新密码下限
 LOGIN_FAIL_LIMIT = 5              # 窗口内失败阈值（按 IP / 用户名）
 LOGIN_LOCK_MINUTES = 15           # 计数窗口 / 锁定时长（分钟）
 LOGIN_CLICK_MIN_INTERVAL = 1.5    # 登录按钮最小点击间隔（秒）

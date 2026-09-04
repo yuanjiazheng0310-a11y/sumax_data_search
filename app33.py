@@ -1123,7 +1123,7 @@ def do_count_once(action_type="unknown"):
 # 🚀 页面入口
 # ==========================================
 st.set_page_config(
-    page_title="SUMAX 汽配查询平台（登录版）",
+    page_title="SUMAX 汽配查询平台（更新：26/09-01）",
     page_icon="📦",
     layout="wide",
 )

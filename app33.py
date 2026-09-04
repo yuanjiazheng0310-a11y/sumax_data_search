@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 # @Time : 2026-09-03
 # @Author : ZJY
-# @File : app33.py（云存储版 · 基于 app32.py 改造，保留 app31/app32 原文件不动）
+# @File : app34.py（= app33.py + 登录页标题「方案A · 现代精致」预览，仅改登录页品牌区，其余与 app33 完全一致）
 # @Software : PyCharm
 # @Description ：SUMAX 汽配查询平台 —— 登录验证门禁 + 账户维度操作统计
 #              · 数据存储：Supabase 云端持久化（部署到 Streamlit Cloud 不丢数据），
@@ -25,6 +25,7 @@
 # 默认管理员：admin / admin123（登录后请尽快在侧边栏修改密码）
 
 import os
+import re
 import time
 import base64
 import hashlib
@@ -33,6 +34,7 @@ from datetime import datetime, timedelta
 
 import pandas as pd
 import streamlit as st
+import streamlit.components.v1 as components
 
 # 数据访问层：云端 Supabase 为主、本地 json 降级（STORE_MODE: supabase / local / auto）
 from data_store import get_store
@@ -48,6 +50,17 @@ BACKGROUND_IMAGE_FILE = os.path.join(BASE_DIR, "跑车.jpg")
 
 DEFAULT_ADMIN = "admin"
 DEFAULT_ADMIN_PWD = "admin123"
+
+# ==========================================
+# 🔐 登录防护参数（见 docs/登录安全与性能优化方案（最终版）.md）
+# ==========================================
+USERNAME_MAX_LEN = 20             # 用户名最长字符数
+PASSWORD_MAX_LEN = 20             # 密码输入上限（登录框 + 新密码上限）
+PASSWORD_MIN_LEN = 8              # 新密码下限
+LOGIN_FAIL_LIMIT = 5              # 窗口内失败阈值（按 IP / 用户名）
+LOGIN_LOCK_MINUTES = 15           # 计数窗口 / 锁定时长（分钟）
+LOGIN_CLICK_MIN_INTERVAL = 1.5    # 登录按钮最小点击间隔（秒）
+USERNAME_ALLOW_RE = re.compile(r"^[A-Za-z0-9_@\-]+$")
 
 
 # ==========================================
@@ -71,6 +84,30 @@ def verify_password(password, stored_hash):
     return secrets.compare_digest(new_digest, digest)
 
 
+def validate_username(username):
+    """本地校验用户名格式（长度 + 字符集）；返回 (是否通过, 提示文字)"""
+    u = (username or "").strip()
+    if not u:
+        return False, "请输入用户名。"
+    if len(u) > USERNAME_MAX_LEN:
+        return False, f"用户名最长 {USERNAME_MAX_LEN} 个字符。"
+    if not USERNAME_ALLOW_RE.match(u):
+        return False, "用户名仅支持字母、数字、_、-、@，且不超过 20 位。"
+    return True, ""
+
+
+def validate_new_password(pwd):
+    """校验新密码：8-20 位且必须同时包含字母和数字；返回 (是否通过, 提示文字)"""
+    p = pwd or ""
+    if not p:
+        return False, "请输入新密码。"
+    if len(p) < PASSWORD_MIN_LEN or len(p) > PASSWORD_MAX_LEN:
+        return False, f"新密码长度需为 {PASSWORD_MIN_LEN}-{PASSWORD_MAX_LEN} 位。"
+    if not re.search(r"[A-Za-z]", p) or not re.search(r"\d", p):
+        return False, "新密码必须同时包含字母和数字。"
+    return True, ""
+
+
 def load_users():
     """读取账户表（数据来自当前存储：Supabase 云端或本地 json）"""
     return store.list_users()
@@ -82,14 +119,18 @@ def save_users(users):
 
 
 def authenticate(username, password):
-    """验证登录，成功返回用户信息 dict，失败返回 (None, 错误信息)"""
+    """验证登录（按用户名单查，不再全表拉取）。
+    失败统一返回"用户名或密码错误"（防账号枚举），不区分账号是否存在。"""
     username = (username or "").strip()
-    users = load_users()
-    user = users.get(username)
+    try:
+        user = store.find_user(username)
+    except Exception as e:
+        print(f"查询用户失败: {e}")
+        user = None
     if user is None:
-        return None, "用户名不存在"
+        return None, "用户名或密码错误"
     if not verify_password(password or "", user.get("password_hash", "")):
-        return None, "密码错误"
+        return None, "用户名或密码错误"
     return {
         "username": username,
         "display_name": user.get("display_name", username),
@@ -162,10 +203,34 @@ def log_login(username, success):
         print(f"登录日志写入失败: {e}")
 
 
+def count_recent_failed(ip=None, username=None):
+    """统计近 LOGIN_LOCK_MINUTES 分钟内失败登录次数（锁定判定用）"""
+    try:
+        return int(store.count_recent_failed(ip=ip, username=username) or 0)
+    except Exception as e:
+        print(f"读取失败计数失败: {e}")
+        return 0
+
+
+def clear_recent_failed(ip=None, username=None):
+    """登录成功后清除窗口内失败计数，使锁定解除"""
+    try:
+        store.clear_recent_failed(ip=ip, username=username)
+    except Exception as e:
+        print(f"清除失败计数失败: {e}")
+
+
+_ADMIN_READY = False  # 进程级缓存：避免每次页面重跑都向云端确认 admin 是否存在
+
+
 def ensure_default_admin_safe():
-    """确保默认管理员存在；存储不可用时返回错误信息（不中断整个应用）"""
+    """确保默认管理员存在；同一进程内只向存储确认一次，之后重跑不再联网"""
+    global _ADMIN_READY
+    if _ADMIN_READY:
+        return True, None
     try:
         store.ensure_default_admin()
+        _ADMIN_READY = True
         return True, None
     except Exception as e:
         return False, str(e)
@@ -175,8 +240,9 @@ def change_my_password(username, old_pwd, new_pwd):
     """自助修改本人密码（需校验原密码），返回 (是否成功, 提示文字)"""
     if not old_pwd:
         return False, "请输入原密码。"
-    if not new_pwd or len(new_pwd) < 4:
-        return False, "新密码长度至少 4 位。"
+    ok_p, msg_p = validate_new_password(new_pwd)
+    if not ok_p:
+        return False, msg_p
     users = load_users()
     user = users.get(username)
     if user is None:
@@ -226,7 +292,7 @@ else:
 BASE_CSS = f"""
 <style>
 {bg_css}
-.stApp {{ background-color: transparent; }}
+.stApp {{ background-color: transparent; isolation: isolate; }}
 /* 隐藏右上菜单与页脚，界面更干净 */
 #MainMenu, footer {{ visibility: hidden; }}
 [data-testid="stHeader"] {{ background: transparent; }}
@@ -297,58 +363,293 @@ LOGIN_CSS = f"""
 /* 登录页隐藏侧边栏 */
 [data-testid="stSidebar"], [data-testid="stSidebarCollapsedControl"] {{ display: none !important; }}
 
-/* 品牌区 */
+/* 品牌区（亮色 A：SUMΛ 深石墨金属流光 + X 暖红渐变收敛辉光） */
 .login-brand {{
     text-align: center;
-    margin: 5vh 0 1.6rem 0;
+    margin: 5vh 0 1.9rem 0;
 }}
-.login-logo {{
-    font-size: 3.4rem;
-    line-height: 1.1;
-    filter: drop-shadow(0 8px 18px rgba(255, 90, 60, 0.45));
-}}
+/* 主标题容器：超粗无衬线 · 宽字距 · 柔和暖影 */
 .login-title {{
-    font-size: 1.9rem;
-    font-weight: 800;
-    letter-spacing: 1px;
-    background: linear-gradient(135deg, #ffffff 30%, #ffb199 100%);
+    font-family: 'Inter', 'Segoe UI', -apple-system, 'Helvetica Neue', Arial, sans-serif;
+    font-size: 3.2rem;
+    font-weight: 900;
+    letter-spacing: 9px;
+    line-height: 1.2;
+    filter: drop-shadow(0 14px 30px rgba(40, 34, 28, 0.16));
+    margin: 0 0 0.2rem;
+}}
+/* SUMΛ：深石墨金属渐变，高光带缓慢流过（亮底适配的流光） */
+.lt-grp {{
+    background: linear-gradient(100deg,
+        #30363f 0%, #59626f 14%, #191c22 30%, #6a7484 46%,
+        #333942 58%, #7d8796 74%, #2e333b 100%);
+    background-size: 200% auto;
     -webkit-background-clip: text;
     -webkit-text-fill-color: transparent;
-    margin: 0.4rem 0 0.1rem;
+    background-clip: text;
+    animation: metalFlow 7s linear infinite;
 }}
+/* X：暖红渐变 + 轻呼吸辉光（亮底收敛不刺眼） */
+.lt-x {{
+    background: linear-gradient(180deg, #ff9a6b 0%, #f2553a 48%, #d02c1a 100%);
+    -webkit-background-clip: text;
+    -webkit-text-fill-color: transparent;
+    background-clip: text;
+    animation: xPulse 2.6s ease-in-out infinite;
+}}
+/* 金属流光：高光带在 SUMΛ 上水平循环扫过 */
+@keyframes metalFlow {{
+    0% {{ background-position: 0% center; }}
+    100% {{ background-position: -200% center; }}
+}}
+/* X 轻呼吸辉光 */
+@keyframes xPulse {{
+    0%, 100% {{ filter: drop-shadow(0 0 4px rgba(240, 85, 56, 0.30)); }}
+    50% {{ filter: drop-shadow(0 0 12px rgba(240, 85, 56, 0.55)); }}
+}}
+/* 英文副标：中灰 · 宽字距 */
 .login-sub {{
-    color: rgba(255, 255, 255, 0.60);
-    font-size: 0.85rem;
-    letter-spacing: 2px;
+    font-family: 'Inter', 'Segoe UI', 'Helvetica Neue', Arial, sans-serif;
+    color: rgba(80, 86, 97, 0.80);
+    font-size: 0.74rem;
+    font-weight: 500;
+    letter-spacing: 5px;
+    margin-top: 0.55rem;
 }}
 
-/* 登录卡片 */
-[data-testid="stForm"] {{
-    background: rgba(12, 12, 28, 0.62);
-    backdrop-filter: blur(16px);
-    border: 1px solid rgba(255, 255, 255, 0.14);
+/* 亮色登录卡片：白色磨砂玻璃 · 发丝细边 · 柔和暖灰投影 */
+[data-testid="stVerticalBlockBorderWrapper"] {{
+    background: rgba(255, 255, 255, 0.74);
+    backdrop-filter: blur(18px);
+    border: 1px solid rgba(0, 0, 0, 0.07) !important;
     border-radius: 20px;
-    padding: 2.0rem 2.2rem 1.8rem 2.2rem;
-    box-shadow: 0 24px 70px rgba(0, 0, 0, 0.5);
+    box-shadow: 0 26px 60px rgba(122, 104, 84, 0.16);
 }}
 
-/* 登录表单内的文字颜色 */
-[data-testid="stForm"] label p {{
-    color: rgba(255, 255, 255, 0.85) !important;
+/* 登录卡片内的文字颜色（深炭灰） */
+[data-testid="stVerticalBlockBorderWrapper"] [data-testid="stWidgetLabel"] p {{
+    color: rgba(34, 37, 43, 0.85) !important;
     font-weight: 600;
 }}
 
-/* 提示文字 */
+/* 提示文字（亮色：中灰） */
 .login-hint {{
     text-align: center;
-    color: rgba(255, 255, 255, 0.45);
+    color: rgba(70, 76, 86, 0.72);
     font-size: 0.78rem;
     margin-top: 1.1rem;
 }}
 .login-error {{
-    color: #ff8a80;
+    color: #d0432f;
+}}
+
+/* 亮色主题背景：覆盖全局跑车深背景 → 珍珠白→暖象牙渐变 */
+.stApp {{
+    background-image: none !important;
+    background: linear-gradient(160deg, #fdfbf6 0%, #f7f3ec 45%, #efe8dd 100%) !important;
+}}
+
+/* 登录页控件（亮色适配） */
+.stTextInput input {{
+    background-color: #ffffff !important;
+    color: #23262d !important;
+    border: 1px solid rgba(0, 0, 0, 0.12) !important;
+    border-radius: 10px !important;
+    box-shadow: none !important;
+}}
+.stTextInput input:focus {{
+    border-color: rgba(226, 112, 72, 0.6) !important;
+    box-shadow: 0 0 0 3px rgba(226, 112, 72, 0.10) !important;
+}}
+.stTextInput input::placeholder {{
+    color: #a2a6ae !important;
+    opacity: 1;
+}}
+/* “显示密码”复选框文字 */
+[data-testid="stCheckbox"] label p {{
+    color: rgba(34, 37, 43, 0.8) !important;
+}}
+/* 主按钮（登录）：磨砂石墨，内敛高级 */
+[data-testid="stBaseButton-primaryFormSubmit"],
+[data-testid="stBaseButton-primary"] {{
+    background: linear-gradient(180deg, #2b3038 0%, #171a20 100%) !important;
+    color: #ffffff !important;
+    border: 1px solid rgba(0, 0, 0, 0.16) !important;
+    border-radius: 10px !important;
+    box-shadow: 0 8px 18px rgba(40, 40, 46, 0.12) !important;
+}}
+[data-testid="stBaseButton-primaryFormSubmit"]:hover,
+[data-testid="stBaseButton-primary"]:hover {{
+    background: linear-gradient(180deg, #39404a 0%, #1e2229 100%) !important;
+    color: #ffffff !important;
+}}
+/* 次按钮（重置）：透明玻璃 + 炭灰细描边 */
+[data-testid="stBaseButton-secondaryFormSubmit"],
+[data-testid="stBaseButton-secondary"] {{
+    background: rgba(255, 255, 255, 0.65) !important;
+    color: #3a3f48 !important;
+    border: 1px solid rgba(30, 32, 38, 0.28) !important;
+    border-radius: 10px !important;
+    box-shadow: none !important;
+}}
+[data-testid="stBaseButton-secondaryFormSubmit"]:hover,
+[data-testid="stBaseButton-secondary"]:hover {{
+    background: rgba(255, 255, 255, 0.95) !important;
+    color: #171a20 !important;
+}}
+/* 帮助提示文字 */
+[data-testid="stVerticalBlockBorderWrapper"] [data-testid="stWidgetHelp"] {{
+    color: rgba(70, 76, 86, 0.6) !important;
+}}
+
+/* 粒子网络背景层：components iframe 固定全屏，垫在登录内容之下
+   （.stApp 已 isolation:isolate → 负 z-index 位于背景图之上、内容之下，不挡任何点击） */
+iframe[data-testid="stIFrame"] {{
+    position: fixed !important;
+    top: 0 !important;
+    left: 0 !important;
+    width: 100vw !important;
+    height: 100vh !important;
+    z-index: -1 !important;
+    border: none !important;
+    background: transparent !important;
 }}
 </style>
+"""
+
+
+# ==========================================
+# ✨ 登录页粒子网络（Canvas 手写，零依赖）
+# 仅随 render_login_page 注入；登录成功后随页面重跑自动消失
+# ==========================================
+PARTICLES_NET_HTML = """
+<div id="lp_bg" style="position:fixed;inset:0;overflow:hidden;pointer-events:none;"></div>
+<script>
+(function(){
+  "use strict";
+  var wrap = document.getElementById('lp_bg');
+  var cv = document.createElement('canvas');
+  cv.style.cssText = "position:absolute;inset:0;width:100%;height:100%;";
+  wrap.appendChild(cv);
+  var ctx = cv.getContext('2d');
+  var W = 0, H = 0, DPR = Math.min(window.devicePixelRatio || 1, 2);
+  var mouse = {x: null, y: null};
+
+  function resize(){
+    W = window.innerWidth || 1;
+    H = window.innerHeight || 1;
+    cv.width = Math.round(W * DPR);
+    cv.height = Math.round(H * DPR);
+    ctx.setTransform(DPR, 0, 0, DPR, 0, 0);
+  }
+  resize();
+  window.addEventListener('resize', resize);
+  window.addEventListener('mousemove', function(e){
+    mouse.x = e.clientX; mouse.y = e.clientY;
+  }, {passive: true});
+
+  // 亮色版粒子：深炭灰为主、暖沙点缀（浅底上低调可见）
+  var COLORS = ["96,102,115", "140,146,158", "60,65,74", "186,150,116"];
+  var N = window.innerWidth < 768 ? 40 : 70;   // 移动端减半
+  var LINK = 120;         // 粒子间连线距离
+  var MOUSE_LINK = 150;   // 鼠标吸附距离
+
+  function rand(a, b){ return a + Math.random() * (b - a); }
+  var ps = [];
+  for (var i = 0; i < N; i++){
+    ps.push({
+      x: rand(0, W), y: rand(0, H),
+      vx: rand(-0.4, 0.4), vy: rand(-0.4, 0.4),
+      r: rand(0.8, 2.1),
+      tw: rand(0, Math.PI * 2),
+      c: COLORS[(Math.random() * COLORS.length) | 0]
+    });
+  }
+
+  var running = true;
+  document.addEventListener('visibilitychange', function(){
+    running = !document.hidden;
+    if (running){ requestAnimationFrame(tick); }
+  });
+
+  function step(p){
+    p.x += p.vx; p.y += p.vy;
+    if (mouse.x !== null){
+      var dx = p.x - mouse.x, dy = p.y - mouse.y;
+      var d2 = dx * dx + dy * dy;
+      if (d2 < MOUSE_LINK * MOUSE_LINK && d2 > 0.01){
+        var d = Math.sqrt(d2);
+        var f = (MOUSE_LINK - d) / MOUSE_LINK * 0.12;
+        p.vx += (dx / d) * f; p.vy += (dy / d) * f;
+      }
+    }
+    if (p.x < -20){ p.x = W + 20; } else if (p.x > W + 20){ p.x = -20; }
+    if (p.y < -20){ p.y = H + 20; } else if (p.y > H + 20){ p.y = -20; }
+    p.vx *= 0.992; p.vy *= 0.992;
+    var sp = Math.sqrt(p.vx * p.vx + p.vy * p.vy);
+    if (sp > 0.6){ p.vx *= 0.6 / sp; p.vy *= 0.6 / sp; }
+    if (sp < 0.05){ p.vx += rand(-0.05, 0.05); p.vy += rand(-0.05, 0.05); }
+  }
+
+  function draw(){
+    ctx.clearRect(0, 0, W, H);
+    var i, j, p, q, dx, dy, d2, d, alpha;
+    // 粒子间连线
+    ctx.lineWidth = 1;
+    for (i = 0; i < N; i++){
+      p = ps[i];
+      for (j = i + 1; j < N; j++){
+        q = ps[j];
+        dx = p.x - q.x; dy = p.y - q.y;
+        d2 = dx * dx + dy * dy;
+        if (d2 < LINK * LINK){
+          d = Math.sqrt(d2);
+          alpha = (1 - d / LINK) * 0.16;
+          ctx.strokeStyle = "rgba(" + p.c + "," + alpha.toFixed(3) + ")";
+          ctx.beginPath(); ctx.moveTo(p.x, p.y); ctx.lineTo(q.x, q.y); ctx.stroke();
+        }
+      }
+    }
+    // 鼠标连线（有鼠标经过时）
+    if (mouse.x !== null){
+      for (i = 0; i < N; i++){
+        p = ps[i];
+        dx = p.x - mouse.x; dy = p.y - mouse.y;
+        d2 = dx * dx + dy * dy;
+        if (d2 < MOUSE_LINK * MOUSE_LINK){
+          d = Math.sqrt(d2);
+          alpha = (1 - d / MOUSE_LINK) * 0.5;
+          ctx.strokeStyle = "rgba(186,150,116," + alpha.toFixed(3) + ")";
+          ctx.beginPath(); ctx.moveTo(mouse.x, mouse.y); ctx.lineTo(p.x, p.y); ctx.stroke();
+        }
+      }
+    }
+    // 粒子本体 + 光晕
+    for (i = 0; i < N; i++){
+      p = ps[i];
+      p.tw += 0.02;
+      var tw = 0.5 + 0.5 * Math.sin(p.tw);
+      ctx.globalAlpha = 0.16 + 0.30 * tw;
+      ctx.fillStyle = "rgb(" + p.c + ")";
+      ctx.beginPath(); ctx.arc(p.x, p.y, p.r, 0, Math.PI * 2); ctx.fill();
+      ctx.globalAlpha = (0.06 + 0.12 * tw) * 0.5;
+      ctx.beginPath(); ctx.arc(p.x, p.y, p.r * 4, 0, Math.PI * 2); ctx.fill();
+    }
+    ctx.globalAlpha = 1;
+  }
+
+  var last = 0;
+  function tick(ts){
+    if (!running){ return; }
+    requestAnimationFrame(tick);
+    if (ts - last < 16){ return; }   // ≈60fps 节流
+    last = ts;
+    for (var i = 0; i < N; i++){ step(ps[i]); }
+    draw();
+  }
+  requestAnimationFrame(tick);
+})();
+</script>
 """
 
 
@@ -438,60 +739,117 @@ def format_search_results(results_df, success_msg=None):
 # ==========================================
 # 🔐 登录页 UI
 # ==========================================
+def _submit_login(username, password, form_ver=None):
+    """处理一次登录点击：频率限制 → 本地校验 → 锁定判定 → 验证 → 落库/跳转"""
+    now_ts = time.time()
+    last_ts = st.session_state.get("login_last_click_ts", 0.0)
+    st.session_state["login_last_click_ts"] = now_ts
+    if last_ts > 0 and (now_ts - last_ts) < LOGIN_CLICK_MIN_INTERVAL:
+        st.error(f"⏱️ 操作太快，请稍候（间隔需大于 {LOGIN_CLICK_MIN_INTERVAL} 秒）再试。")
+        return
+
+    # ① 本地输入校验（不消耗云端请求）
+    ok_u, msg_u = validate_username(username)
+    if not ok_u:
+        st.error(f"❌ {msg_u}")
+        return
+    pwd = password or ""
+    if not pwd:
+        st.error("❌ 请输入密码。")
+        return
+    if len(pwd) > PASSWORD_MAX_LEN:
+        st.error(f"❌ 密码最多 {PASSWORD_MAX_LEN} 个字符。")
+        return
+
+    u = (username or "").strip()
+    ip = get_client_ip()
+
+    # ② 失败锁定判定（近 LOGIN_LOCK_MINUTES 分钟内失败 ≥ LOGIN_FAIL_LIMIT 次即锁）
+    if count_recent_failed(ip=ip) >= LOGIN_FAIL_LIMIT:
+        st.error(f"🔒 尝试次数过多，当前网络已被临时锁定，请 {LOGIN_LOCK_MINUTES} 分钟后再试。")
+        return
+    if count_recent_failed(username=u) >= LOGIN_FAIL_LIMIT:
+        st.error(f"🔒 尝试次数过多，该用户名已被临时锁定，请 {LOGIN_LOCK_MINUTES} 分钟后再试。")
+        return
+
+    # ③ 正常验证（失败统一提示，防账号枚举）
+    user, err = authenticate(u, pwd)
+    if user:
+        log_login(u, True)
+        # 成功后清零窗口内失败计数，解除锁定
+        clear_recent_failed(ip=ip)
+        clear_recent_failed(username=u)
+        # 切换登录表单 key 版本，避免旧 widget key 残留值
+        if form_ver is not None:
+            st.session_state["login_form_ver"] = form_ver + 1
+        st.session_state["logged_in"] = True
+        st.session_state["user"] = user
+        st.rerun()
+    else:
+        log_login(u, False)
+        st.error(f"❌ 登录失败：{err}")
+
+
 def render_login_page():
     st.markdown(LOGIN_CSS, unsafe_allow_html=True)
+    # ✨ 粒子网络背景（iframe 全屏垫底，见 LOGIN_CSS 中 iframe[data-testid="stIFrame"] 规则）
+    components.html(PARTICLES_NET_HTML, height=1)
 
     col_l, col_m, col_r = st.columns([1, 1.05, 1])
     with col_m:
         st.markdown(
             """
             <div class="login-brand">
-                <div class="login-logo">📦</div>
-                <div class="login-title">SUMAX 汽配查询平台</div>
+                <div class="login-title"><span class="lt-grp">SUMΛ</span><span class="lt-x">X</span></div>
                 <div class="login-sub">AUTO PARTS SUITE QUERY SYSTEM</div>
             </div>
             """,
             unsafe_allow_html=True,
         )
 
-        # “显示密码”复选框需放在表单外，切换时即时生效
+        # “显示密码”复选框
         show_pwd = st.checkbox("显示密码", key="login_show_pwd", value=False)
 
-        with st.form("login_form", clear_on_submit=False):
-            username = st.text_input("👤 用户名", placeholder="请输入用户名", key="login_user")
+        # 登录表单 key 版本：点击“重置”或登录成功后把版本 +1，
+        # 输入框用新 key 重建，自然清空（Streamlit 1.6x 不再允许脚本直接删 widget key）
+        form_ver = st.session_state.get("login_form_ver", 0)
+        user_key = f"login_user_{form_ver}"
+        pwd_key = f"login_pwd_{'plain' if show_pwd else 'masked'}_{form_ver}"
+
+        with st.container(border=True):
+            username = st.text_input(
+                "👤 用户名",
+                placeholder="请输入用户名",
+                key=user_key,
+                max_chars=USERNAME_MAX_LEN,
+                help=f"最长 {USERNAME_MAX_LEN} 字符，支持字母/数字/_/-/@",
+            )
+            pwd_help = f"最多 {PASSWORD_MAX_LEN} 字符"
             if show_pwd:
-                password = st.text_input("🔑 密码", key="login_pwd_plain", placeholder="请输入密码")
+                password = st.text_input("🔑 密码", key=pwd_key,
+                                         placeholder="请输入密码", help=pwd_help,
+                                         max_chars=PASSWORD_MAX_LEN)
             else:
-                password = st.text_input("🔑 密码", type="password", key="login_pwd_masked", placeholder="请输入密码")
+                password = st.text_input("🔑 密码", type="password", key=pwd_key,
+                                         placeholder="请输入密码", help=pwd_help,
+                                         max_chars=PASSWORD_MAX_LEN)
 
             col_b1, col_b2 = st.columns(2)
-            do_login = col_b1.form_submit_button("登  录", type="primary", use_container_width=True)
-            do_reset = col_b2.form_submit_button("重  置", use_container_width=True)
+            do_login = col_b1.button("登  录", type="primary", use_container_width=True)
+            do_reset = col_b2.button("重  置", use_container_width=True)
 
-        if do_reset:
-            # widget 已实例化后不能直接赋新值，需先删除对应 key 使其重建为空
-            for key in ("login_user", "login_pwd_plain", "login_pwd_masked"):
-                if key in st.session_state:
-                    del st.session_state[key]
-            st.rerun()
-
-        if do_login:
-            user, err = authenticate(username, password)
-            if user:
-                log_login(username, True)
-                for key in ("login_user", "login_pwd_plain", "login_pwd_masked"):
-                    if key in st.session_state:
-                        del st.session_state[key]
-                st.session_state["logged_in"] = True
-                st.session_state["user"] = user
+            if do_reset:
+                # 重置：切换 key 版本，让输入框以新 key 重建为空
+                st.session_state["login_form_ver"] = form_ver + 1
                 st.rerun()
-            else:
-                log_login(username, False)
-                st.error(f"❌ 登录失败：{err}")
+
+            if do_login:
+                _submit_login(username, password, form_ver)
 
         st.markdown(
             '<div class="login-hint">默认管理员：admin&nbsp;/&nbsp;admin123<br>'
-            "登录后请在侧边栏「修改我的密码」中尽快修改初始密码</div>",
+            "登录后请在侧边栏「修改我的密码」中尽快修改初始密码<br>"
+            "输入后请点击「登 录」按钮</div>",
             unsafe_allow_html=True,
         )
 
@@ -510,9 +868,15 @@ def render_account_manager():
 
     with tab_add:
         with st.form("form_add_user", clear_on_submit=True):
-            new_name = st.text_input("用户名（登录账号）", key="au_name")
+            new_name = st.text_input(
+                "用户名（登录账号）",
+                key="au_name",
+                help=f"最长 {USERNAME_MAX_LEN} 字符，支持字母/数字/_/-/@",
+            )
             new_display = st.text_input("显示名称（如：张三）", key="au_display")
-            new_pwd = st.text_input("初始密码", type="password", key="au_pwd")
+            new_pwd = st.text_input("初始密码", type="password", key="au_pwd",
+                                    max_chars=PASSWORD_MAX_LEN,
+                                    help=f"{PASSWORD_MIN_LEN}-{PASSWORD_MAX_LEN} 位，需含字母和数字")
             new_role = st.selectbox("角色", ["user", "admin"], index=0,
                                     format_func=lambda r: "管理员" if r == "admin" else "普通用户")
             submitted_add = st.form_submit_button("✔️ 创建账户", type="primary", use_container_width=True)
@@ -523,16 +887,22 @@ def render_account_manager():
                 st.error("用户名与初始密码不能为空。")
             elif name in users:
                 st.error(f"账户 [{name}] 已存在。")
-            elif len(new_pwd) < 4:
-                st.error("密码长度至少 4 位。")
             else:
-                users[name] = {
-                    "password_hash": hash_password(new_pwd),
-                    "display_name": (new_display or "").strip() or name,
-                    "role": new_role,
-                }
-                save_users(users)
-                st.success(f"✅ 账户 [{name}] 创建成功。")
+                ok_u, msg_u = validate_username(name)
+                if not ok_u:
+                    st.error(f"❌ {msg_u}")
+                else:
+                    ok_p, msg_p = validate_new_password(new_pwd)
+                    if not ok_p:
+                        st.error(f"❌ {msg_p}")
+                    else:
+                        users[name] = {
+                            "password_hash": hash_password(new_pwd),
+                            "display_name": (new_display or "").strip() or name,
+                            "role": new_role,
+                        }
+                        save_users(users)
+                        st.success(f"✅ 账户 [{name}] 创建成功。")
 
     with tab_reset:
         other_users = [u for u in users.keys() if u != DEFAULT_ADMIN]
@@ -541,17 +911,22 @@ def render_account_manager():
             with st.form("form_reset_pwd"):
                 target = st.selectbox("选择账户", [DEFAULT_ADMIN] + other_users,
                                       format_func=lambda u: f"{u}（{users[u].get('display_name', u)}）")
-                new_pwd2 = st.text_input("设置新密码", type="password", key="rp_pwd")
+                new_pwd2 = st.text_input("设置新密码", type="password", key="rp_pwd",
+                                         max_chars=PASSWORD_MAX_LEN,
+                                         help=f"{PASSWORD_MIN_LEN}-{PASSWORD_MAX_LEN} 位，须含字母和数字")
                 submitted_reset = st.form_submit_button("💾 保存新密码", type="primary", use_container_width=True)
         else:
             target = target_default
             with st.form("form_reset_pwd"):
-                new_pwd2 = st.text_input("设置新密码", type="password", key="rp_pwd")
+                new_pwd2 = st.text_input("设置新密码", type="password", key="rp_pwd",
+                                         max_chars=PASSWORD_MAX_LEN,
+                                         help=f"{PASSWORD_MIN_LEN}-{PASSWORD_MAX_LEN} 位，须含字母和数字")
                 submitted_reset = st.form_submit_button("💾 保存新密码", type="primary", use_container_width=True)
 
         if submitted_reset:
-            if not new_pwd2 or len(new_pwd2) < 4:
-                st.error("密码长度至少 4 位。")
+            ok_p, msg_p = validate_new_password(new_pwd2)
+            if not ok_p:
+                st.error(f"❌ {msg_p}")
             else:
                 users[target]["password_hash"] = hash_password(new_pwd2)
                 save_users(users)
@@ -770,6 +1145,7 @@ if not admin_ok:
 # 会话初始化
 st.session_state.setdefault("logged_in", False)
 st.session_state.setdefault("user", None)
+st.session_state.setdefault("login_form_ver", 0)
 
 # ---------- 未登录：仅展示登录页 ----------
 if not st.session_state["logged_in"]:
@@ -817,9 +1193,15 @@ with st.sidebar:
     # 🔑 修改我的密码（管理员与普通用户均可，仅能修改自己）
     with st.expander("🔑 修改我的密码"):
         with st.form("form_change_my_pwd"):
-            pwd_old = st.text_input("原密码", type="password", key="cmp_pwd_old")
-            pwd_new = st.text_input("新密码（至少 4 位）", type="password", key="cmp_pwd_new")
-            pwd_new2 = st.text_input("确认新密码", type="password", key="cmp_pwd_new2")
+            pwd_help = f"{PASSWORD_MIN_LEN}-{PASSWORD_MAX_LEN} 位，须含字母和数字"
+            pwd_old = st.text_input("原密码", type="password", key="cmp_pwd_old",
+                                    max_chars=PASSWORD_MAX_LEN,
+                                    help="请输入当前正在使用的密码")
+            pwd_new = st.text_input(f"新密码（{PASSWORD_MIN_LEN}-{PASSWORD_MAX_LEN} 位，须含字母和数字）",
+                                    type="password", key="cmp_pwd_new",
+                                    max_chars=PASSWORD_MAX_LEN, help=pwd_help)
+            pwd_new2 = st.text_input("确认新密码", type="password", key="cmp_pwd_new2",
+                                     max_chars=PASSWORD_MAX_LEN, help=pwd_help)
             do_change_pwd = st.form_submit_button("💾 保存新密码", type="primary", use_container_width=True)
         if do_change_pwd:
             if not pwd_old or not pwd_new or not pwd_new2:
@@ -836,6 +1218,8 @@ with st.sidebar:
     if st.button("🚪 退出登录", use_container_width=True):
         st.session_state["logged_in"] = False
         st.session_state["user"] = None
+        # 切换登录表单 key 版本，避免旧密码/用户名残留
+        st.session_state["login_form_ver"] = st.session_state.get("login_form_ver", 0) + 1
         st.rerun()
 
     st.markdown("---")
@@ -1133,7 +1517,9 @@ with tab_multi_to_single:
                 valid_lines = [line.strip() for line in all_lines if line.strip()]
                 if valid_lines:
                     result_line = ",".join(valid_lines)
-                    st.text_area("✅ 转换结果", value=result_line, key="result_line_tab1", height=50)
+                    # 结果用只读展示，避免带 key 的 text_area 缓存旧值导致"二次转换不刷新"
+                    st.caption("✅ 转换结果")
+                    st.code(result_line, language=None)
                     st.success(f"转换成功！共处理 {len(valid_lines)} 个有效数据。")
                 else:
                     st.warning("输入内容为空或没有有效数据行。")
@@ -1166,7 +1552,9 @@ with tab_single_to_multi:
                 valid_parts = [part for part in potential_parts if part]
                 if valid_parts:
                     result_multi_line = "\n".join(valid_parts)
-                    st.text_area("✅ 转换结果", value=result_multi_line, key="result_multi_line_tab2", height=200)
+                    # 结果用只读展示，避免带 key 的 text_area 缓存旧值导致"二次转换不刷新"
+                    st.caption("✅ 转换结果")
+                    st.code(result_multi_line, language=None)
                     st.success(f"转换成功！共拆分出 {len(valid_parts)} 行有效数据。")
                 else:
                     st.warning("输入内容为空或没有有效数据段。")

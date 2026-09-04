@@ -847,8 +847,8 @@ def render_login_page():
                 _submit_login(username, password, form_ver)
 
         st.markdown(
-            '<div class="login-hint">默认管理员：admin&nbsp;/&nbsp;admin123<br>'
-            "登录后请在侧边栏「修改我的密码」中尽快修改初始密码<br>"
+            '<div class="login-hint">默认管理员：admin&nbsp;/&nbsp;admin<br>'
+            "登录后可在侧边栏「修改我的密码」中修改初始密码<br>"
             "输入后请点击「登 录」按钮</div>",
             unsafe_allow_html=True,
         )

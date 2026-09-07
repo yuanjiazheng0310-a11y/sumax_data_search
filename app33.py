@@ -224,12 +224,17 @@ _ADMIN_READY = False  # 进程级缓存：避免每次页面重跑都向云端�
 
 
 def ensure_default_admin_safe():
-    """确保默认管理员存在；同一进程内只向存储确认一次，之后重跑不再联网"""
+    """确保默认管理员存在；同一进程内只向存储确认一次，之后重跑不再联网。
+
+    内部含 PGRST303 自动重试（约 20 秒窗口）；等待期间显示转圈提示，
+    避免冷启动撞上平台瞬时波动时页面"假死"无反馈。
+    """
     global _ADMIN_READY
     if _ADMIN_READY:
         return True, None
     try:
-        store.ensure_default_admin()
+        with st.spinner("🔄 正在连接数据服务…"):
+            store.ensure_default_admin()
         _ADMIN_READY = True
         return True, None
     except Exception as e:
@@ -1134,12 +1139,11 @@ st.markdown(BASE_CSS, unsafe_allow_html=True)
 admin_ok, admin_err = ensure_default_admin_safe()
 if not admin_ok:
     st.error(
-        f"⚠️ 无法连接数据存储：{admin_err}\n\n"
-        "请检查：① Supabase 项目是否已执行 db/schema.sql 建表；"
-        "② .streamlit/secrets.toml（本地）或 Streamlit Cloud Secrets 是否填写了 "
-        "SUPABASE_URL / SUPABASE_SERVICE_ROLE_KEY。\n\n"
-        "如需强制本地模式运行，可设置环境变量 STORE_MODE=local。"
+        f"⚠️ 数据服务暂时不可用（已自动重试约 20 秒仍未恢复）：{admin_err}\n\n"
+        "通常是 Supabase 侧的短暂波动，稍等片刻后点击下方按钮重试即可恢复；\n"
+        "若长时间无法恢复，请到 Supabase 控制台 Settings → General → Restart Project。"
     )
+    st.button("🔄 立即重试连接", type="primary", use_container_width=True)
     st.stop()
 
 # 会话初始化

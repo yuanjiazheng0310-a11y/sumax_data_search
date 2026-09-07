@@ -18,7 +18,9 @@ import os
 import json
 import hashlib
 import secrets as _secrets
+import time  # ✅ 已导入，用于重试等待
 from datetime import datetime, timedelta, timezone
+from zoneinfo import ZoneInfo
 
 import pandas as pd
 from filelock import FileLock
@@ -72,14 +74,19 @@ def now_text():
 
 
 def _to_naive_local(dt):
-    """把可能带时区的时间转成本机本地 naive datetime（展示与统计口径统一）"""
+    """把可能带时区的时间转成东八区（Asia/Shanghai）naive datetime（展示与统计口径统一）。
+
+    本地 json 模式写入的时间本身就是本地时间（naive），不做转换；
+    Supabase 云端返回的是 UTC，需显式转上海时区，避免云端容器默认 UTC
+    时区导致页面上把 UTC 时间直接展示出来。
+    """
     if dt is None:
         return None
     if hasattr(dt, "tzinfo") and dt.tzinfo is not None:
         # pandas.Timestamp.astimezone() 必须带 tz 参数；先转 Python datetime 再处理
         if isinstance(dt, pd.Timestamp):
             dt = dt.to_pydatetime()
-        return dt.astimezone().replace(tzinfo=None)
+        return dt.astimezone(ZoneInfo("Asia/Shanghai")).replace(tzinfo=None)
     return dt
 
 
@@ -297,7 +304,7 @@ class LocalJsonStore:
 
 
 # ----------------------------------------------------------
-# Supabase 云端实现
+# Supabase 云端实现（✅ 已加入自动重试机制）
 # ----------------------------------------------------------
 class SupabaseStore:
     name = "supabase"
@@ -311,17 +318,57 @@ class SupabaseStore:
             raise RuntimeError("缺少 supabase 依赖，请先执行：pip install -r requirements.txt")
         self._client = create_client(url, key)
 
+    # ---------- 🛡️ 智能重试核心方法 ----------
+    def _execute_with_retry(self, db_operation, max_retries=6):
+        """
+        执行数据库操作；遇到 JWT 时间异常（PGRST303 / JWT issued at future）
+        时自动等待并重试，用户无感。
+
+        注意：service_role key 模式下 auth.refresh_session() 无会话可用，刷新
+        大概率失败，属正常现象——此处只尝试刷新（万一可用），失败不阻断重试。
+        PGRST303 的根因在 Supabase 侧 PostgREST 时间状态，客户端最多只能
+        争取自愈：按 1/2/3/5/8 秒退避共重试 6 次（总窗口约 20 秒），覆盖
+        平台侧"抖动几十秒内自行恢复"的常见场景。仅失败时才阻塞等待，
+        正常时零开销。仍失败则抛错提示人工 Restart Project。
+        """
+        # 每次失败后的等待秒数（最后一次失败不再等待，直接抛错）
+        backoffs = (1, 2, 3, 5, 8)
+        last_err = None
+        for attempt in range(max_retries):
+            try:
+                return db_operation()
+            except Exception as e:
+                err_str = str(e)
+                if "PGRST303" not in err_str and "JWT issued at future" not in err_str:
+                    raise  # 非时间异常，直接抛出，不重试
+                last_err = e
+                print(f"⚠️ 检测到 JWT 时间异常（{err_str}），第 {attempt + 1}/{max_retries} 次后重试…")
+                try:
+                    # service key 模式下无会话，刷新会失败；有会话则尝试刷新
+                    self._client.auth.refresh_session()
+                except Exception as refresh_e:
+                    print(f"⚠️ 会话刷新不可用（service key 模式属正常），继续重试: {refresh_e}")
+                if attempt < len(backoffs):
+                    time.sleep(backoffs[attempt])
+        raise RuntimeError(
+            f"数据库操作连续 {max_retries} 次（约 {sum(backoffs)} 秒窗口）触发 JWT 时间异常。"
+            "请到 Supabase 控制台 Settings → General → Restart Project 重置服务端时间状态，"
+            "或重新生成新的 service_role key。"
+        ) from last_err
+
     # ---------- 账户 ----------
     def list_users(self):
-        resp = self._client.table("users").select("username,password_hash,display_name,role").execute()
-        users = {}
-        for row in resp.data:
-            users[row["username"]] = {
-                "password_hash": row["password_hash"],
-                "display_name": row.get("display_name") or row["username"],
-                "role": row.get("role") or "user",
-            }
-        return users
+        def do_query():
+            resp = self._client.table("users").select("username,password_hash,display_name,role").execute()
+            users = {}
+            for row in resp.data:
+                users[row["username"]] = {
+                    "password_hash": row["password_hash"],
+                    "display_name": row.get("display_name") or row["username"],
+                    "role": row.get("role") or "user",
+                }
+            return users
+        return self._execute_with_retry(do_query)
 
     def save_users(self, users):
         """全量 upsert 账户（以 username 为冲突键；不支持物理删除）"""
@@ -333,60 +380,72 @@ class SupabaseStore:
                 "display_name": info.get("display_name", name),
                 "role": info.get("role", "user"),
             })
-        if rows:
+        if not rows:
+            return
+        def do_upsert():
             self._client.table("users").upsert(rows, on_conflict="username").execute()
+        self._execute_with_retry(do_upsert)
 
     def find_user(self, username):
         """按用户名精确查找单个账户（单条查询，替代全表拉取）；不存在返回 None"""
-        resp = self._client.table("users").select("username,password_hash,display_name,role") \
-            .eq("username", username).limit(1).execute()
-        rows = resp.data or []
-        if not rows:
-            return None
-        row = rows[0]
-        return {
-            "password_hash": row["password_hash"],
-            "display_name": row.get("display_name") or row["username"],
-            "role": row.get("role") or "user",
-        }
+        def do_query():
+            resp = self._client.table("users").select("username,password_hash,display_name,role") \
+                .eq("username", username).limit(1).execute()
+            rows = resp.data or []
+            if not rows:
+                return None
+            row = rows[0]
+            return {
+                "password_hash": row["password_hash"],
+                "display_name": row.get("display_name") or row["username"],
+                "role": row.get("role") or "user",
+            }
+        return self._execute_with_retry(do_query)
 
     def ensure_default_admin(self):
-        resp = self._client.table("users").select("username").eq("username", DEFAULT_ADMIN).limit(1).execute()
-        if not resp.data:
-            self._client.table("users").insert({
-                "username": DEFAULT_ADMIN,
-                "password_hash": hash_password(DEFAULT_ADMIN_PWD),
-                "display_name": "管理员",
-                "role": "admin",
-            }).execute()
+        def do_check():
+            resp = self._client.table("users").select("username").eq("username", DEFAULT_ADMIN).limit(1).execute()
+            if not resp.data:
+                self._client.table("users").insert({
+                    "username": DEFAULT_ADMIN,
+                    "password_hash": hash_password(DEFAULT_ADMIN_PWD),
+                    "display_name": "管理员",
+                    "role": "admin",
+                }).execute()
+        self._execute_with_retry(do_check)
 
     # ---------- 操作明细 ----------
     def record_action(self, username, action_type):
         if action_type not in ACTION_TYPES:
             action_type = "unknown"
-        self._client.table("action_log").insert({
-            "username": username,
-            "action_type": action_type,
-        }).execute()
-        stats = self.get_user_stats(username)
-        return stats["total"], stats["today"], stats["last"]
+        def do_insert():
+            self._client.table("action_log").insert({
+                "username": username,
+                "action_type": action_type,
+            }).execute()
+        self._execute_with_retry(do_insert)
+        # 插入成功后再查询统计（查询也可能触发重试）
+        return self.get_user_stats(username)
 
     def fetch_actions(self, username=None):
-        query = self._client.table("action_log").select("username,action_type,created_at").order("created_at")
-        if username is not None:
-            query = query.eq("username", username)
-        resp = query.execute()
-        rows = resp.data or []
-        df = pd.DataFrame(rows)
-        if df.empty:
-            return pd.DataFrame(columns=["username", "action_type", "created_at", "date"])
-        df["created_at"] = pd.to_datetime(df["created_at"], errors="coerce", utc=True)
-        df["created_at"] = df["created_at"].apply(_to_naive_local)
-        df = df.dropna(subset=["created_at"])
-        df["date"] = df["created_at"].dt.strftime("%Y-%m-%d")
-        return df.reset_index(drop=True)
+        def do_query():
+            query = self._client.table("action_log").select("username,action_type,created_at").order("created_at")
+            if username is not None:
+                query = query.eq("username", username)
+            resp = query.execute()
+            rows = resp.data or []
+            df = pd.DataFrame(rows)
+            if df.empty:
+                return pd.DataFrame(columns=["username", "action_type", "created_at", "date"])
+            df["created_at"] = pd.to_datetime(df["created_at"], errors="coerce", utc=True)
+            df["created_at"] = df["created_at"].apply(_to_naive_local)
+            df = df.dropna(subset=["created_at"])
+            df["date"] = df["created_at"].dt.strftime("%Y-%m-%d")
+            return df.reset_index(drop=True)
+        return self._execute_with_retry(do_query)
 
     def get_user_stats(self, username):
+        # 直接调用 fetch_actions（其内部自带重试）
         df = self.fetch_actions(username=username)
         today_str = datetime.now().strftime("%Y-%m-%d")
         if df.empty:
@@ -400,52 +459,60 @@ class SupabaseStore:
 
     # ---------- 登录日志 ----------
     def log_login(self, username, ip, success):
-        self._client.table("login_attempts").insert({
-            "username": (username or "").strip() or "-",
-            "ip": ip or "",
-            "success": bool(success),
-        }).execute()
+        def do_insert():
+            self._client.table("login_attempts").insert({
+                "username": (username or "").strip() or "-",
+                "ip": ip or "",
+                "success": bool(success),
+            }).execute()
+        self._execute_with_retry(do_insert)
 
     def fetch_login_records(self, limit=500):
-        resp = self._client.table("login_attempts").select("username,ip,success,created_at") \
-            .order("created_at", desc=True).limit(int(limit)).execute()
-        rows = resp.data or []
-        rows = list(reversed(rows))
-        df = pd.DataFrame(rows)
-        if df.empty:
-            return pd.DataFrame(columns=["time", "username", "ip", "success"])
-        df["created_at"] = pd.to_datetime(df["created_at"], errors="coerce", utc=True)
-        df["created_at"] = df["created_at"].apply(_to_naive_local)
-        return df.reset_index(drop=True)
+        def do_query():
+            resp = self._client.table("login_attempts").select("username,ip,success,created_at") \
+                .order("created_at", desc=True).limit(int(limit)).execute()
+            rows = resp.data or []
+            rows = list(reversed(rows))
+            df = pd.DataFrame(rows)
+            if df.empty:
+                return pd.DataFrame(columns=["time", "username", "ip", "success"])
+            df["created_at"] = pd.to_datetime(df["created_at"], errors="coerce", utc=True)
+            df["created_at"] = df["created_at"].apply(_to_naive_local)
+            return df.reset_index(drop=True)
+        return self._execute_with_retry(do_query)
 
     # ---------- 登录失败限流辅助（Supabase） ----------
     def count_recent_failed(self, ip=None, username=None):
         """统计近 LOGIN_WINDOW_MINUTES 分钟内失败登录次数（可按 ip / username 过滤）"""
         since = (datetime.now(timezone.utc) - timedelta(minutes=LOGIN_WINDOW_MINUTES)).isoformat()
-        q = self._client.table("login_attempts") \
-            .select("id", count="exact") \
-            .eq("success", False).gte("created_at", since)
-        if ip:
-            q = q.eq("ip", ip)
-        if username:
-            q = q.eq("username", username)
-        resp = q.execute()
-        if getattr(resp, "count", None) is not None:
-            return int(resp.count)
-        return len(resp.data or [])
+        def do_count():
+            q = self._client.table("login_attempts") \
+                .select("id", count="exact") \
+                .eq("success", False).gte("created_at", since)
+            if ip:
+                q = q.eq("ip", ip)
+            if username:
+                q = q.eq("username", username)
+            resp = q.execute()
+            if getattr(resp, "count", None) is not None:
+                return int(resp.count)
+            return len(resp.data or [])
+        return self._execute_with_retry(do_count)
 
     def clear_recent_failed(self, ip=None, username=None):
         """删除近 LOGIN_WINDOW_MINUTES 分钟内的失败记录（登录成功时调用）"""
         if ip is None and username is None:
             return
         since = (datetime.now(timezone.utc) - timedelta(minutes=LOGIN_WINDOW_MINUTES)).isoformat()
-        q = self._client.table("login_attempts") \
-            .delete().eq("success", False).gte("created_at", since)
-        if ip:
-            q = q.eq("ip", ip)
-        if username:
-            q = q.eq("username", username)
-        q.execute()
+        def do_delete():
+            q = self._client.table("login_attempts") \
+                .delete().eq("success", False).gte("created_at", since)
+            if ip:
+                q = q.eq("ip", ip)
+            if username:
+                q = q.eq("username", username)
+            q.execute()
+        self._execute_with_retry(do_delete)
 
 
 # ----------------------------------------------------------

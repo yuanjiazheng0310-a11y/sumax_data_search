@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-# @Time : 2026-09-03
+# @Time : 2026-09-07
 # @Author : ZJY
 # @File : app34.py（= app33.py + 登录页标题「方案A · 现代精致」预览，仅改登录页品牌区，其余与 app33 完全一致）
 # @Software : PyCharm
@@ -1128,7 +1128,7 @@ def do_count_once(action_type="unknown"):
 # 🚀 页面入口
 # ==========================================
 st.set_page_config(
-    page_title="SUMAX 汽配查询平台（更新：26/09-01）",
+    page_title="SUMAX 汽配查询平台（更新：26/09-08）",
     page_icon="📦",
     layout="wide",
 )

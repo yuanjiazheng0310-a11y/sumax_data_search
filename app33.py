@@ -298,6 +298,16 @@ BASE_CSS = f"""
 <style>
 {bg_css}
 .stApp {{ background-color: transparent; isolation: isolate; }}
+/* 内容区压暗遮罩：压暗跑车背景图，提升白字对比度
+   （负 z-index 位于背景图之上、内容之下，pointer-events:none 不挡任何点击） */
+.stApp::before {{
+    content: "";
+    position: fixed;
+    top: 0; left: 0; right: 0; bottom: 0;
+    background: rgba(12, 14, 22, 0.58);
+    z-index: -1;
+    pointer-events: none;
+}}
 /* 隐藏右上菜单与页脚，界面更干净 */
 #MainMenu, footer {{ visibility: hidden; }}
 [data-testid="stHeader"] {{ background: transparent; }}
@@ -521,6 +531,10 @@ LOGIN_CSS = f"""
 .stApp {{
     background-image: none !important;
     background: linear-gradient(160deg, #fdfbf6 0%, #f7f3ec 45%, #efe8dd 100%) !important;
+}}
+/* 登录页不套用主界面的深色遮罩（保持亮底） */
+.stApp::before {{
+    display: none !important;
 }}
 
 /* 登录页控件（亮色适配） */

@@ -277,37 +277,18 @@ def get_base64_of_image(file_path):
 
 img_base64 = get_base64_of_image(BACKGROUND_IMAGE_FILE)
 
-if img_base64:
-    bg_css = f"""
-    .stApp {{
-        background-image: url("data:image/jpg;base64,{img_base64}");
-        background-size: cover;
-        background-position: center;
-        background-repeat: no-repeat;
-        background-attachment: fixed;
-    }}
-    """
-else:
-    bg_css = """
+# 浅色商务风（类金蝶）：不再使用背景图，改为浅灰纯色底
+# （跑车.jpg 已弃用；BACKGROUND_IMAGE_FILE / get_base64_of_image 保留仅为兼容，不再参与渲染）
+bg_css = """
     .stApp {
-        background: linear-gradient(135deg, #14142b 0%, #2d2b55 60%, #3a1a2f 100%);
+        background: #F5F6F8;
     }
     """
 
 BASE_CSS = f"""
 <style>
 {bg_css}
-.stApp {{ background-color: transparent; isolation: isolate; }}
-/* 内容区压暗遮罩：压暗跑车背景图，提升白字对比度
-   （负 z-index 位于背景图之上、内容之下，pointer-events:none 不挡任何点击） */
-.stApp::before {{
-    content: "";
-    position: fixed;
-    top: 0; left: 0; right: 0; bottom: 0;
-    background: rgba(12, 14, 22, 0.58);
-    z-index: -1;
-    pointer-events: none;
-}}
+.stApp {{ background-color: #F5F6F8; isolation: isolate; }}
 /* 隐藏右上菜单与页脚，界面更干净 */
 #MainMenu, footer {{ visibility: hidden; }}
 [data-testid="stHeader"] {{ background: transparent; }}
@@ -388,10 +369,11 @@ BASE_CSS = f"""
     color: #1A1A1A !important;
 }}
 
-/* 输入框：白底黑字，阅读清晰 */
+/* 输入框：白底黑字 + 浅边框，阅读清晰 */
 .stTextInput input, .stTextArea textarea {{
     background-color: #FFFFFF !important;
     color: #1a1a1a !important;
+    border: 1px solid rgba(0, 0, 0, 0.18) !important;
     border-radius: 8px;
 }}
 .stTextInput input::placeholder, .stTextArea textarea::placeholder {{
@@ -399,29 +381,34 @@ BASE_CSS = f"""
     opacity: 1;
 }}
 
-/* 主按钮：品牌红色渐变 */
+/* 主按钮：金蝶蓝渐变 */
 [data-testid="stBaseButton-primaryFormSubmit"],
 [data-testid="stBaseButton-primary"] {{
-    background: linear-gradient(135deg, #FF4B4B 0%, #ff6a3d 100%) !important;
+    background: linear-gradient(135deg, #1E6FD9 0%, #3B82F6 100%) !important;
     color: #ffffff !important;
     border: none !important;
     border-radius: 8px !important;
-    box-shadow: 0 6px 18px rgba(255, 75, 75, 0.35);
+    box-shadow: 0 4px 12px rgba(30, 111, 217, 0.28);
     font-weight: 600;
 }}
 [data-testid="stBaseButton-primaryFormSubmit"]:hover,
 [data-testid="stBaseButton-primary"]:hover {{
-    background: linear-gradient(135deg, #e63333 0%, #f25a2e 100%) !important;
+    background: linear-gradient(135deg, #175BB0 0%, #2F6FED 100%) !important;
 }}
 
-/* 次要按钮：玻璃描边 */
+/* 次要按钮：白底黑字 + 浅边框（浅色主题） */
 [data-testid="stBaseButton-secondaryFormSubmit"],
 [data-testid="stBaseButton-secondary"] {{
-    background: rgba(255, 255, 255, 0.10) !important;
-    color: #ffffff !important;
-    border: 1px solid rgba(255, 255, 255, 0.35) !important;
+    background: #FFFFFF !important;
+    color: #1A1A1A !important;
+    border: 1px solid rgba(0, 0, 0, 0.22) !important;
     border-radius: 8px !important;
-    backdrop-filter: blur(4px);
+}}
+[data-testid="stBaseButton-secondaryFormSubmit"]:hover,
+[data-testid="stBaseButton-secondary"]:hover {{
+    background: #F0F2F5 !important;
+    color: #000000 !important;
+    border-color: rgba(0, 0, 0, 0.35) !important;
 }}
 
 /* 文本域拖拽调整高度 */
@@ -431,14 +418,15 @@ BASE_CSS = f"""
     max-height: 500px;
 }}
 
-/* metric 卡片微调 */
+/* metric 卡片：白底黑字（浅色主题） */
 [data-testid="stMetric"] {{
-    background: rgba(255, 255, 255, 0.06);
-    border: 1px solid rgba(255, 255, 255, 0.10);
+    background: #FFFFFF;
+    border: 1px solid rgba(0, 0, 0, 0.10);
     border-radius: 12px;
     padding: 10px 12px;
 }}
-[data-testid="stMetricValue"] {{ color: #ff6a4d !important; }}
+[data-testid="stMetricValue"] {{ color: #1E6FD9 !important; }}
+[data-testid="stMetricLabel"] p {{ color: #4A4A4A !important; }}
 </style>
 """
 
@@ -532,10 +520,7 @@ LOGIN_CSS = f"""
     background-image: none !important;
     background: linear-gradient(160deg, #fdfbf6 0%, #f7f3ec 45%, #efe8dd 100%) !important;
 }}
-/* 登录页不套用主界面的深色遮罩（保持亮底） */
-.stApp::before {{
-    display: none !important;
-}}
+
 
 /* 登录页控件（亮色适配） */
 .stTextInput input {{

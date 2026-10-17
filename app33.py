@@ -448,12 +448,6 @@ LOGIN_CSS = f"""
     color: #d0432f;
 }}
 
-/* 亮色主题背景：覆盖全局跑车深背景 → 珍珠白→暖象牙渐变 */
-.stApp {{
-    background-image: none !important;
-    background: linear-gradient(160deg, #fdfbf6 0%, #f7f3ec 45%, #efe8dd 100%) !important;
-}}
-
 /* 登录页控件（亮色适配） */
 .stTextInput input {{
     background-color: #ffffff !important;

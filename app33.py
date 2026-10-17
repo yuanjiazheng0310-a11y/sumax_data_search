@@ -277,103 +277,42 @@ def get_base64_of_image(file_path):
 
 img_base64 = get_base64_of_image(BACKGROUND_IMAGE_FILE)
 
-# 浅色商务风（类金蝶）：不再使用背景图，改为浅灰纯色底
-# （跑车.jpg 已弃用；BACKGROUND_IMAGE_FILE / get_base64_of_image 保留仅为兼容，不再参与渲染）
-bg_css = """
+if img_base64:
+    bg_css = f"""
+    .stApp {{
+        background-image: url("data:image/jpg;base64,{img_base64}");
+        background-size: cover;
+        background-position: center;
+        background-repeat: no-repeat;
+        background-attachment: fixed;
+    }}
+    """
+else:
+    bg_css = """
     .stApp {
-        background: #F5F6F8;
+        background: linear-gradient(135deg, #14142b 0%, #2d2b55 60%, #3a1a2f 100%);
     }
     """
 
 BASE_CSS = f"""
 <style>
 {bg_css}
-.stApp {{ background-color: #F5F6F8; isolation: isolate; }}
+.stApp {{ background-color: transparent; isolation: isolate; }}
 /* 隐藏右上菜单与页脚，界面更干净 */
 #MainMenu, footer {{ visibility: hidden; }}
 [data-testid="stHeader"] {{ background: transparent; }}
 
-/* ===== 主界面侧边栏：白色实底 + 黑色文字（清晰度优先） ===== */
+/* 主界面侧边栏：半透明毛玻璃 */
 [data-testid="stSidebar"] {{
-    background-color: #FAFAFA;
-    border-right: 1px solid rgba(0, 0, 0, 0.10);
+    background-color: rgba(10, 10, 25, 0.62);
+    backdrop-filter: blur(10px);
+    border-right: 1px solid rgba(255, 255, 255, 0.08);
 }}
 
-/* 侧边栏内默认文字：黑色 */
-[data-testid="stSidebar"] h1, [data-testid="stSidebar"] h2,
-[data-testid="stSidebar"] h3, [data-testid="stSidebar"] p,
-[data-testid="stSidebar"] span, [data-testid="stSidebar"] div,
-[data-testid="stSidebar"] label, [data-testid="stSidebar"] strong {{
-    color: #1A1A1A;
-}}
-
-/* 次要说明文字（caption/小字）：深灰，层次分明 */
-[data-testid="stSidebar"] [data-testid="stCaptionContainer"] p,
-[data-testid="stSidebar"] small {{
-    color: #4A4A4A !important;
-}}
-
-/* 分隔线：深色 */
-[data-testid="stSidebar"] hr {{
-    border-color: rgba(0, 0, 0, 0.12) !important;
-}}
-
-/* 提示框（success 绿 / info 蓝 / warning 橙）：浅底深字，保留语义色边框 */
-[data-testid="stSidebar"] [data-testid="stAlert"] {{
-    background-color: rgba(0, 0, 0, 0.04) !important;
-}}
-[data-testid="stSidebar"] [data-testid="stAlert"] p,
-[data-testid="stSidebar"] [data-testid="stAlert"] div {{
-    color: #1A1A1A !important;
-}}
-
-/* metric 卡片：浅灰底 + 黑字 */
-[data-testid="stSidebar"] [data-testid="stMetric"] {{
-    background: rgba(0, 0, 0, 0.04);
-    border: 1px solid rgba(0, 0, 0, 0.10);
-    border-radius: 12px;
-}}
-[data-testid="stSidebar"] [data-testid="stMetricLabel"] p,
-[data-testid="stSidebar"] [data-testid="stMetricValue"] {{
-    color: #1A1A1A !important;
-}}
-
-/* 次要按钮（退出登录等）：白底黑字（原半透明白字在白底上看不见） */
-[data-testid="stSidebar"] [data-testid="stBaseButton-secondary"] {{
-    background: #FFFFFF !important;
-    color: #1A1A1A !important;
-    border: 1px solid rgba(0, 0, 0, 0.28) !important;
-}}
-[data-testid="stSidebar"] [data-testid="stBaseButton-secondary"]:hover {{
-    background: #F0F0F2 !important;
-    color: #000000 !important;
-}}
-
-/* 输入框：白底黑字 + 浅边框（白底上要能看清边界） */
-[data-testid="stSidebar"] .stTextInput input,
-[data-testid="stSidebar"] .stTextArea textarea {{
-    background-color: #FFFFFF !important;
-    color: #1A1A1A !important;
-    border: 1px solid rgba(0, 0, 0, 0.18) !important;
-}}
-
-/* 展开器（修改我的密码）：白底黑字 */
-[data-testid="stSidebar"] [data-testid="stExpander"] {{
-    background-color: #FFFFFF;
-    border: 1px solid rgba(0, 0, 0, 0.12) !important;
-    border-radius: 10px;
-}}
-[data-testid="stSidebar"] [data-testid="stExpander"] summary,
-[data-testid="stSidebar"] [data-testid="stExpander"] p,
-[data-testid="stSidebar"] [data-testid="stExpander"] span {{
-    color: #1A1A1A !important;
-}}
-
-/* 输入框：白底黑字 + 浅边框，阅读清晰 */
+/* 输入框：白底黑字，阅读清晰 */
 .stTextInput input, .stTextArea textarea {{
     background-color: #FFFFFF !important;
     color: #1a1a1a !important;
-    border: 1px solid rgba(0, 0, 0, 0.18) !important;
     border-radius: 8px;
 }}
 .stTextInput input::placeholder, .stTextArea textarea::placeholder {{
@@ -381,34 +320,29 @@ BASE_CSS = f"""
     opacity: 1;
 }}
 
-/* 主按钮：金蝶蓝渐变 */
+/* 主按钮：品牌红色渐变 */
 [data-testid="stBaseButton-primaryFormSubmit"],
 [data-testid="stBaseButton-primary"] {{
-    background: linear-gradient(135deg, #1E6FD9 0%, #3B82F6 100%) !important;
+    background: linear-gradient(135deg, #FF4B4B 0%, #ff6a3d 100%) !important;
     color: #ffffff !important;
     border: none !important;
     border-radius: 8px !important;
-    box-shadow: 0 4px 12px rgba(30, 111, 217, 0.28);
+    box-shadow: 0 6px 18px rgba(255, 75, 75, 0.35);
     font-weight: 600;
 }}
 [data-testid="stBaseButton-primaryFormSubmit"]:hover,
 [data-testid="stBaseButton-primary"]:hover {{
-    background: linear-gradient(135deg, #175BB0 0%, #2F6FED 100%) !important;
+    background: linear-gradient(135deg, #e63333 0%, #f25a2e 100%) !important;
 }}
 
-/* 次要按钮：白底黑字 + 浅边框（浅色主题） */
+/* 次要按钮：玻璃描边 */
 [data-testid="stBaseButton-secondaryFormSubmit"],
 [data-testid="stBaseButton-secondary"] {{
-    background: #FFFFFF !important;
-    color: #1A1A1A !important;
-    border: 1px solid rgba(0, 0, 0, 0.22) !important;
+    background: rgba(255, 255, 255, 0.10) !important;
+    color: #ffffff !important;
+    border: 1px solid rgba(255, 255, 255, 0.35) !important;
     border-radius: 8px !important;
-}}
-[data-testid="stBaseButton-secondaryFormSubmit"]:hover,
-[data-testid="stBaseButton-secondary"]:hover {{
-    background: #F0F2F5 !important;
-    color: #000000 !important;
-    border-color: rgba(0, 0, 0, 0.35) !important;
+    backdrop-filter: blur(4px);
 }}
 
 /* 文本域拖拽调整高度 */
@@ -418,15 +352,14 @@ BASE_CSS = f"""
     max-height: 500px;
 }}
 
-/* metric 卡片：白底黑字（浅色主题） */
+/* metric 卡片微调 */
 [data-testid="stMetric"] {{
-    background: #FFFFFF;
-    border: 1px solid rgba(0, 0, 0, 0.10);
+    background: rgba(255, 255, 255, 0.06);
+    border: 1px solid rgba(255, 255, 255, 0.10);
     border-radius: 12px;
     padding: 10px 12px;
 }}
-[data-testid="stMetricValue"] {{ color: #1E6FD9 !important; }}
-[data-testid="stMetricLabel"] p {{ color: #4A4A4A !important; }}
+[data-testid="stMetricValue"] {{ color: #ff6a4d !important; }}
 </style>
 """
 
@@ -520,7 +453,6 @@ LOGIN_CSS = f"""
     background-image: none !important;
     background: linear-gradient(160deg, #fdfbf6 0%, #f7f3ec 45%, #efe8dd 100%) !important;
 }}
-
 
 /* 登录页控件（亮色适配） */
 .stTextInput input {{

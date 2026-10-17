@@ -302,10 +302,9 @@ BASE_CSS = f"""
 #MainMenu, footer {{ visibility: hidden; }}
 [data-testid="stHeader"] {{ background: transparent; }}
 
-/* 主界面侧边栏：半透明毛玻璃 */
+/* 主界面侧边栏：实色石墨黑（不透明，保证文字清晰不发糊） */
 [data-testid="stSidebar"] {{
-    background-color: rgba(10, 10, 25, 0.62);
-    backdrop-filter: blur(10px);
+    background-color: #10131C;
     border-right: 1px solid rgba(255, 255, 255, 0.08);
 }}
 

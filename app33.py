@@ -1128,7 +1128,7 @@ def do_count_once(action_type="unknown"):
 # 🚀 页面入口
 # ==========================================
 st.set_page_config(
-    page_title="SUMAX 汽配查询平台（更新：26年11月9日）",
+    page_title="SUMAX 汽配查询平台（更新：26年11月25日）",
     page_icon="📦",
     layout="wide",
 )
@@ -1299,8 +1299,8 @@ if st.button("📦 查询套装", type="primary"):
                 if query_set.issubset(kit_parts):
                     results.append({
                         "套装编号": row["套装编号"],
-                        "匹配零件数": len(query_set),
-                        "套装总零件数": len(kit_parts),
+                        "匹配零件项数": len(query_set),
+                        "套装零件总项数": len(kit_parts),
                     })
         else:
             for _, row in grouped.iterrows():
